@@ -7,10 +7,20 @@
 
 import collections
 import dataclasses
+import decimal
+
+_Immutable = frozenset([
+    bool,
+    int, float, complex, decimal.Decimal,
+    str,
+    tuple,
+    frozenset
+])
 
 
 class _IRollbackable:
     type_map = {}
+    all_subclass = []
 
     __slots__ = ('target', 'state')
 
@@ -25,13 +35,13 @@ class _IRollbackable:
         pass
 
     def __init_subclass__(cls):
+        _IRollbackable.all_subclass.append(cls)
         for tp in vars(cls).get('types', ()):
             _IRollbackable.type_map[tp] = cls
 
-
-class _Immutable(_IRollbackable):
-    __slots__ = ()
-    types = (tuple, str, int, float, frozenset)
+    @staticmethod
+    def has_proto(target):
+        return False
 
 
 class _List(_IRollbackable):
@@ -43,6 +53,23 @@ class _List(_IRollbackable):
 
     def rollback(self):
         self.target[:] = self.state
+
+
+class _DataClass(_IRollbackable):
+    __slots__ = ()
+
+    def track(self):
+        self.state = {}
+        for f in dataclasses.fields(self.target):
+            self.state[f.name] = getattr(self.target, f.name)
+
+    def rollback(self):
+        for f in dataclasses.fields(self.target):
+            setattr(self.target, f.name, self.state[f.name])
+
+    @staticmethod
+    def has_proto(target):
+        return dataclasses.is_dataclass(target)
 
 
 class _GenericContainer(_IRollbackable):
@@ -68,7 +95,6 @@ class _GenericContainer(_IRollbackable):
 
 class _State(_IRollbackable):
     __slots__ = ()
-    types = ()
 
     def track(self):
         self.state = self.target.get_state()
@@ -107,18 +133,14 @@ class _Slots(_IRollbackable):
                 delattr(self.target, attr)
 
 
-class _DataClass(_IRollbackable):
-    __slots__ = ()
-    types = ()
-
-    def track(self):
-        self.state = {}
-        for f in dataclasses.fields(self.target):
-            self.state[f.name] = getattr(self.target, f.name)
-
-    def rollback(self):
-        for f in dataclasses.fields(self.target):
-            setattr(self.target, f.name, self.state[f.name])
+def _get_slots_attrs(cls):
+    attrs = set()
+    for base in cls.__mro__:
+        s = getattr(base, '__slots__', ())
+        if isinstance(s, str):
+            s = (s, ) # __slots__ == 'abc' equals __slots__ == ('abc', )
+        attrs.update(s)
+    return list(attrs)
 
 
 class _Context:
@@ -128,7 +150,7 @@ class _Context:
         self._tracked = []
 
     def __enter__(self):
-        pass
+        return self
 
     def __exit__(self, *_):
         self.rollback()
@@ -139,15 +161,15 @@ class _Context:
 
     def track(self, item):
         cls = type(item)
+        if cls in _Immutable:
+            return
+
         rb_cls = _IRollbackable.type_map.get(cls)
 
         if rb_cls is not None:
             return self._begin_track(rb_cls(item))
 
-        if dataclasses.is_dataclass(cls):
-            return self._begin_track(_DataClass(item))
-
-        for prbcls in (_GenericContainer, _State):
+        for prbcls in _IRollbackable.all_subclass:
             if prbcls.has_proto(item):
                 return self._begin_track(prbcls(item))
 
@@ -163,12 +185,7 @@ class _Context:
 
         if d is None:
             # object with __slots__
-            attrs = []
-            for base in cls.__mro__:
-                s = getattr(base, '__slots__', ())
-                if isinstance(s, str):
-                    s = (s, ) # __slots__ == 'abc' equals __slots__ == ('abc', )
-                attrs.extend(s)
+            attrs = _get_slots_attrs(cls)
             return self._begin_track(_Slots(item, attrs))
 
         raise TypeError(f'unknown type: {cls!r}')
