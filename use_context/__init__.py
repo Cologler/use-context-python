@@ -31,16 +31,29 @@ class _IRollbackable(abc.ABC):
 
     @abc.abstractmethod
     def get_state(self):
+        '''
+        get current state from target
+        '''
         raise NotImplementedError
 
     def track(self):
+        '''
+        begin track the target
+        '''
         self.state = self.get_state()
 
     def is_changed(self):
+        '''
+        check whether the state of target is changed or not
+        '''
         return self.state != self.get_state()
 
+    @abc.abstractmethod
     def rollback(self):
-        pass
+        '''
+        rollback state of target from when it being track
+        '''
+        raise NotImplementedError
 
     def __init_subclass__(cls):
         _IRollbackable.all_subclass.append(cls)
@@ -69,12 +82,23 @@ class _DataClass(_IRollbackable):
     def get_state(self):
         state = {}
         for f in dataclasses.fields(self.target):
-            state[f.name] = getattr(self.target, f.name)
+            try:
+                # dataclass cannot delete attr
+                # which make dataclass raise error when it use equal op
+                # however I catch it here.
+                state[f.name] = getattr(self.target, f.name)
+            except AttributeError:
+                pass
         return state
 
     def rollback(self):
         for f in dataclasses.fields(self.target):
-            setattr(self.target, f.name, self.state[f.name])
+            if f.name in self.state:
+                setattr(self.target, f.name, self.state[f.name])
+
+            # a great dataclass should never get there:
+            elif hasattr(self.target, f.name):
+                delattr(self.target, f.name)
 
     @staticmethod
     def has_proto(target):
@@ -139,7 +163,7 @@ class _Slots(_IRollbackable):
         for attr in self.attrs:
             if attr in self.state:
                 setattr(self.target, attr, self.state[attr])
-            else:
+            elif hasattr(self.target, attr):
                 delattr(self.target, attr)
 
 
