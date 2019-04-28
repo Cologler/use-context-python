@@ -5,6 +5,7 @@
 #
 # ----------
 
+import abc
 import collections
 import dataclasses
 import decimal
@@ -18,7 +19,7 @@ _Immutable = frozenset([
 ])
 
 
-class _IRollbackable:
+class _IRollbackable(abc.ABC):
     type_map = {}
     all_subclass = []
 
@@ -28,8 +29,15 @@ class _IRollbackable:
         self.target = target
         self.state = None
 
+    @abc.abstractmethod
+    def get_state(self):
+        raise NotImplementedError
+
     def track(self):
-        pass
+        self.state = self.get_state()
+
+    def is_changed(self):
+        return self.state != self.get_state()
 
     def rollback(self):
         pass
@@ -48,8 +56,8 @@ class _List(_IRollbackable):
     __slots__ = ()
     types = (list, )
 
-    def track(self):
-        self.state = self.target.copy()
+    def get_state(self):
+        return self.target.copy()
 
     def rollback(self):
         self.target[:] = self.state
@@ -58,10 +66,11 @@ class _List(_IRollbackable):
 class _DataClass(_IRollbackable):
     __slots__ = ()
 
-    def track(self):
-        self.state = {}
+    def get_state(self):
+        state = {}
         for f in dataclasses.fields(self.target):
-            self.state[f.name] = getattr(self.target, f.name)
+            state[f.name] = getattr(self.target, f.name)
+        return state
 
     def rollback(self):
         for f in dataclasses.fields(self.target):
@@ -78,8 +87,8 @@ class _GenericContainer(_IRollbackable):
         set, dict, collections.defaultdict
     )
 
-    def track(self):
-        self.state = self.target.copy()
+    def get_state(self):
+        return self.target.copy()
 
     def rollback(self):
         self.target.clear()
@@ -96,8 +105,8 @@ class _GenericContainer(_IRollbackable):
 class _State(_IRollbackable):
     __slots__ = ()
 
-    def track(self):
-        self.state = self.target.get_state()
+    def get_state(self):
+        return self.target.get_state()
 
     def rollback(self):
         self.target.from_state(self.state)
@@ -117,13 +126,14 @@ class _Slots(_IRollbackable):
         super().__init__(target)
         self.attrs = attrs
 
-    def track(self):
-        self.state = {}
+    def get_state(self):
+        state = {}
         for attr in self.attrs:
             try:
-                self.state[attr] = getattr(self.target, attr)
+                state[attr] = getattr(self.target, attr)
             except AttributeError:
                 pass
+        return state
 
     def rollback(self):
         for attr in self.attrs:
@@ -131,6 +141,26 @@ class _Slots(_IRollbackable):
                 setattr(self.target, attr, self.state[attr])
             else:
                 delattr(self.target, attr)
+
+
+class _RollbackableProxy(_IRollbackable):
+    __slots__ = ('proxy_obj')
+
+    def __init__(self, target, proxy_for: _IRollbackable):
+        super().__init__(target)
+        self.proxy_obj = proxy_for
+
+    def get_state(self):
+        return self.proxy_obj.get_state()
+
+    def track(self):
+        return self.proxy_obj.track()
+
+    def is_changed(self):
+        return self.proxy_obj.is_changed()
+
+    def rollback(self):
+        return self.proxy_obj.rollback()
 
 
 def _get_slots_attrs(cls):
@@ -161,8 +191,9 @@ class _Context:
 
     def track(self, item):
         cls = type(item)
+
         if cls in _Immutable:
-            return
+            raise TypeError(f'{cls!r} is immutable')
 
         rb_cls = _IRollbackable.type_map.get(cls)
 
@@ -181,7 +212,7 @@ class _Context:
             d = None
 
         if isinstance(d, dict):
-            return self._begin_track(_GenericContainer(d))
+            return self._begin_track(_RollbackableProxy(item, _GenericContainer(d)))
 
         if d is None:
             # object with __slots__
@@ -194,6 +225,13 @@ class _Context:
         while self._tracked:
             rb: _IRollbackable = self._tracked.pop()
             rb.rollback()
+
+    def is_changed(self, item):
+        '''check whether target is changed or not'''
+        for rb in self._tracked:
+            if rb.target is item:
+                return rb.is_changed()
+        raise ValueError(f'untracked object {item!r}')
 
 
 def use(*items):

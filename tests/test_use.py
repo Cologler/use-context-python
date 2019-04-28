@@ -16,6 +16,7 @@ def test_order():
         use_context._GenericContainer,
         use_context._State,
         use_context._Slots,
+        use_context._RollbackableProxy,
     ]
 
 def test_user_str():
@@ -25,9 +26,11 @@ def test_user_str():
             self.value = 2
 
     a = A()
-    with use(a):
+    with use(a) as ctx:
+        assert not ctx.is_changed(a)
         a.value = 3
         assert a.value == 3
+        assert ctx.is_changed(a)
     assert a.value == 2
 
 def test_user_str_with_slots():
@@ -41,30 +44,38 @@ def test_user_str_with_slots():
     assert use_context._get_slots_attrs(A) == ['value']
 
     a = A()
-    with use(a):
+    with use(a) as ctx:
+        assert not ctx.is_changed(a)
         a.value = 3
         assert a.value == 3
+        assert ctx.is_changed(a)
     assert a.value == 2
 
 def test_use_list():
     ls = [1, 2, 3]
-    with use(ls):
+    with use(ls) as ctx:
+        assert not ctx.is_changed(ls)
         ls.append(5)
         assert ls == [1, 2, 3, 5]
+        assert ctx.is_changed(ls)
     assert ls == [1, 2, 3]
 
 def test_use_set():
     s = {1, 2}
-    with use(s):
+    with use(s) as ctx:
+        assert not ctx.is_changed(s)
         s.add(15)
         assert s == {1, 2, 15}
+        assert ctx.is_changed(s)
     assert s == {1, 2}
 
 def test_use_dict():
     d = {1: 2}
-    with use(d):
+    with use(d) as ctx:
+        assert not ctx.is_changed(d)
         d[3] = 4
         assert d == {1: 2, 3: 4}
+        assert ctx.is_changed(d)
     assert d == {1: 2}
 
 def test_dataclass():
@@ -76,9 +87,11 @@ def test_dataclass():
         f3: str
 
     a = A('1', '2', '3')
-    with use(a):
+    with use(a) as ctx:
+        assert not ctx.is_changed(a)
         a.f1 = '6'
         assert a == A('6', '2', '3')
+        assert ctx.is_changed(a)
     assert a == A('1', '2', '3')
 
 def test_state():
@@ -92,9 +105,11 @@ def test_state():
 
     a = A()
     a.a = 1
-    with use(a):
+    with use(a) as ctx:
+        assert not ctx.is_changed(a)
         a.a = 2
         assert a.a == 2
+        assert ctx.is_changed(a)
     assert a.a == 1
 
 def test_with_dict():
@@ -103,9 +118,11 @@ def test_with_dict():
 
     a = A()
     a.a = 1
-    with use(a):
+    with use(a) as ctx:
+        assert not ctx.is_changed(a)
         a.a = 2
         assert a.a == 2
+        assert ctx.is_changed(a)
     assert a.a == 1
 
 def test_with_slots():
@@ -114,10 +131,12 @@ def test_with_slots():
 
     a = A()
     a.a = 1
-    with use(a):
+    with use(a) as ctx:
+        assert not ctx.is_changed(a)
         a.a = 2
         a.b = 3
         assert a.a == 2
         assert a.b == 3
+        assert ctx.is_changed(a)
     assert a.a == 1
     assert not hasattr(a, 'b')
