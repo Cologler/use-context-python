@@ -16,7 +16,7 @@ def test_order():
         use_context._GenericContainer,
         use_context._State,
         use_context._Slots,
-        use_context._RollbackableProxy,
+        use_context._RollbackableProxy
     ]
 
 def test_user_str():
@@ -140,3 +140,34 @@ def test_with_slots():
         assert ctx.is_changed(a)
     assert a.a == 1
     assert not hasattr(a, 'b')
+
+def test_refs():
+    a = 15
+    with use(refs=['a']) as ctx:
+        assert not ctx.is_ref_changed('a')
+        a = 16
+        assert a == 16
+        assert ctx.is_ref_changed('a')
+    assert a == 15
+
+def test_refs_internal():
+    a = 15
+    def internal():
+        nonlocal a
+        with use(refs=['a']) as ctx:
+            assert not ctx.is_ref_changed('a')
+            a = 16
+            assert a == 16
+            assert ctx.is_ref_changed('a')
+        assert a == 15
+    internal()
+
+g_a = 15
+def test_refs_global():
+    global g_a
+    with use(refs=['g_a']) as ctx:
+        assert not ctx.is_ref_changed('g_a')
+        g_a = 16
+        assert g_a == 16
+        assert ctx.is_ref_changed('g_a')
+    assert g_a == 15

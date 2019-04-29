@@ -9,6 +9,9 @@ import abc
 import collections
 import dataclasses
 import decimal
+import inspect
+import ctypes
+
 
 _Immutable = frozenset([
     bool,
@@ -187,6 +190,35 @@ class _RollbackableProxy(_IRollbackable):
         return self.proxy_obj.rollback()
 
 
+class _Ref:
+    __slots__ = ('frame', 'name', 'state', 'in_local')
+
+    def __init__(self, frame, name):
+        self.frame = frame
+        self.name = name
+        self.in_local = name in (self.frame.f_code.co_varnames + self.frame.f_code.co_freevars)
+        self.state = self._d()[self.name]
+
+    def _d(self):
+        if self.in_local:
+            return self.frame.f_locals
+        else:
+            return self.frame.f_globals
+
+    def is_changed(self):
+        return self._d()[self.name] is not self.state
+
+    def rollback(self):
+        self._d()[self.name] = self.state
+        # update f_locals
+        # https://www.python.org/dev/peps/pep-0558/
+        if self.in_local:
+            ctypes.pythonapi.PyFrame_LocalsToFast(
+                ctypes.py_object(self.frame),
+                ctypes.c_int(0)
+            )
+
+
 def _get_slots_attrs(cls):
     attrs = set()
     for base in cls.__mro__:
@@ -198,10 +230,11 @@ def _get_slots_attrs(cls):
 
 
 class _Context:
-    __slots__ = ('_tracked')
+    __slots__ = ('_tracked', '_ref_tracked')
 
     def __init__(self):
         self._tracked = []
+        self._ref_tracked = []
 
     def __enter__(self):
         return self
@@ -212,6 +245,12 @@ class _Context:
     def _begin_track(self, rb: _IRollbackable):
         rb.track()
         self._tracked.append(rb)
+
+    def track_ref(self, name):
+        curframe = inspect.currentframe()
+        calframe = inspect.getouterframes(curframe, 2)
+        frame = calframe[2].frame
+        self._ref_tracked.append(_Ref(frame, name))
 
     def track(self, item):
         cls = type(item)
@@ -247,8 +286,9 @@ class _Context:
 
     def rollback(self):
         while self._tracked:
-            rb: _IRollbackable = self._tracked.pop()
-            rb.rollback()
+            self._tracked.pop().rollback()
+        while self._ref_tracked:
+            self._ref_tracked.pop().rollback()
 
     def is_changed(self, item):
         '''check whether target is changed or not'''
@@ -257,8 +297,15 @@ class _Context:
                 return rb.is_changed()
         raise ValueError(f'untracked object {item!r}')
 
+    def is_ref_changed(self, name: str):
+        '''check whether target is changed or not'''
+        for ref in self._ref_tracked:
+            if ref.name == name:
+                return ref.is_changed()
+        raise ValueError(f'untracked ref {name!r}')
 
-def use(*items):
+
+def use(*items, refs: list=()):
     '''
     use some vars in current context.
 
@@ -267,4 +314,6 @@ def use(*items):
     ctx = _Context()
     for item in items:
         ctx.track(item)
+    for ref_name in refs:
+        ctx.track_ref(ref_name)
     return ctx
